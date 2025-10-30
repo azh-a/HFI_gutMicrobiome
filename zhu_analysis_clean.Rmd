@@ -1,0 +1,1360 @@
+---
+title: "zhu_analysis_clean"
+author: "Angie Zhu"
+date: "2025-06-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+```{r libraries}
+library(phyloseq)
+library(vegan)
+library(rstatix)
+library(Maaslin2)
+library(haven)    
+library(ggrepel)
+library(RColorBrewer)
+library(rlang)
+library(dplyr)
+library(ggsci)
+library(ggpubr)
+library(patchwork)
+library(viridis)
+library(microbiomeMarker)
+library(MicrobiotaProcess)
+library(pROC)
+library(pheatmap)
+library(compositions)
+library(caret)
+library(tibble)
+library(doParallel)
+library(gtsummary)  
+library(readr)
+library(stringr)
+```
+
+## Load Data
+```{r data}
+ps_gutMicro <- readRDS("zhu_working_ps.rds")
+df <- ps_gutMicro@sam_data
+```
+
+## Demographic Table
+```{r demography}
+
+meta <- as(sample_data(ps_gutMicro), "data.frame")
+
+meta <- meta %>%
+  mutate(
+    Age = as.numeric(as.character(Age)),
+    
+    Residence = recode_factor(as.character(Residence),
+      "1" = "Urban", "3" = "Rural"),
+
+    FatheOccup = recode_factor(as.character(FatheOccup),
+      "1" = "Farmers", "2" = "Student", "3" = "Private business",
+      "4" = "Daily Laborer", "5" = "Gov’t employee", "6" = "Others"),
+
+    Famsize2 = recode_factor(as.character(Famsize2),
+      "1" = "≤5", "2" = ">5"),
+
+    Delivery1 = recode_factor(as.character(Delivery1),
+      "1" = "Vaginal delivery", "2" = "C-section", "3" = "Other"),
+
+    WealthInd2 = recode_factor(as.character(WealthInd2),
+      "0" = "Wealthy", "1" = "Medium", "2" = "Poor"),
+
+    BabyFed = recode_factor(as.character(BabyFed),
+      "1" = "Formula milk", "2" = "Breast milk"),
+    
+    STH2 = recode_factor(as.character(STH2),
+      "0" = "No","1" = "Yes"),
+    
+    HAZ.cut2 = recode_factor(as.character(HAZ.cut2),
+      "0" = "Normal","1" = "Stunted"),
+    
+    BAZ.cut2 = recode_factor(as.character(BAZ.cut2),
+      "0" = "Normal weight","1" = "Underweight"),
+
+    FoodSecure_vs_FoodInsecure = factor(FoodSecure_vs_FoodInsecure)
+  )
+meta$BMI <- meta$Weightkg / (meta$Heightcm / 100)^2
+
+# Generate demographics table grouped by Food Security
+demog_table <- meta %>%
+  select(
+    FoodSecure_vs_FoodInsecure,
+    Age, Weightkg, Heightcm, BMI, 
+    sex, Residence, FatheOccup, WealthInd2, Famsize2,
+    Delivery1, BabyFed, STH2
+  ) %>%
+  tbl_summary(
+    by = FoodSecure_vs_FoodInsecure,
+    type = list(
+      Age ~ "continuous",
+      STH2 ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ± {sd}",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    label = list(
+      Age ~ "Age (years)",
+      Weightkg ~ "Weight (kg)",
+      Heightcm ~ "Height (cm)",
+      sex ~ "Sex",
+      Residence ~ "Residence",
+      FatheOccup ~ "Father's Occupation",
+      WealthInd2 ~ "Wealth Index",
+      Famsize2 ~ "Family Size",
+      Delivery1 ~ "Delivery Mode",
+      BabyFed ~ "Feeding Type",
+      STH2 ~ "STH Infection"
+    ),
+    missing = "no"
+  ) %>%
+  add_p() %>%
+  modify_header(label ~ "**Variable**")
+# Print
+demog_table
+
+
+
+
+fs_table <- meta %>%
+  select(FoodSecure_vs_FoodInsecure, Q1, Q1a, Q2, Q2a, Q3, Q3a, Q4, Q4a, Q5, 
+         Q5a, Q6, Q6a, Q7, Q7a, Q8, Q8a, Q9, Q9a) %>%
+  tbl_summary(
+    statistic = all_categorical() ~ "{n} ({p}%)",
+    type = list(
+      Q1 ~ "categorical",
+      Q2 ~ "categorical",
+      Q3 ~ "categorical",
+      Q4 ~ "categorical",
+      Q5 ~ "categorical",
+      Q6 ~ "categorical",
+      Q7 ~ "categorical",
+      Q8 ~ "categorical",
+      Q9 ~ "categorical"
+    ),
+    label = list(
+      FoodSecure_vs_FoodInsecure ~ "Food Security Status",
+      Q1 ~ "Q1: Worry about not enough food",
+      Q1a ~ "Q1 Frequency",
+      Q2 ~ "Q2: Unable to eat preferred food",
+      Q2a ~ "Q2 Frequency"
+    ),
+    missing = "no"
+  ) %>%
+  add_n() %>%
+  modify_header(label ~ "**Variable**")
+
+# Print table
+fs_table
+
+# General table
+gen_table <- meta %>%
+  select(Age, Weightkg, Heightcm, BMI, sex, Residence) %>%
+  tbl_summary(
+    statistic = list(
+      all_continuous() ~ "{mean} ± {sd}",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    type = list(
+      sex ~ "categorical",
+      Age ~ "continuous"
+    ),
+    label = list(
+      Age ~ "Age (years)",
+      Weightkg ~ "Weight (kg)",
+      Heightcm ~ "Height (cm)",
+      sex ~ "Sex"
+    ),
+    missing = "no"
+  ) %>%
+  add_n() %>%
+  modify_header(label ~ "**Variable**")
+
+# Print table
+gen_table
+```
+
+
+## Alpha Diversity Analysis
+```{r alpha}
+
+a_diversity_categorical <- function(ps, variable, title=variable) {
+  sam_data <- as(sample_data(ps), "data.frame")
+  keep_samples <- !is.na(sam_data[[variable]])
+  ps_filtered <- prune_samples(keep_samples, ps)
+  sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
+  value_counts <- table(sam_data_filtered[[variable]])
+  valid_values <- names(value_counts)[value_counts >= 1]
+  final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
+  ps_final <- prune_samples(final_keep_samples, ps_filtered)
+  alpha_div <- estimate_richness(ps_final, measures = c("Chao1", "Shannon"))
+  alpha_div$sample_id <- rownames(alpha_div)
+  alpha_div <- merge(alpha_div, sam_data_filtered, by.x = "sample_id", by.y = "row.names")
+  
+  sample_data(ps_final)[[variable]] <- factor(sample_data(ps_final)[[variable]])
+  
+  a_diversity_factor <- plot_richness(ps_final, x = variable, color = variable, 
+                                      measures = c("Chao1", "Shannon"))
+  a_diversity_factor$layers[[2]] = NULL 
+  
+  a_diversity_factor <- a_diversity_factor + 
+    geom_boxplot() + 
+    geom_jitter(alpha = 0.25) + 
+    theme_bw() + 
+    theme(axis.text = element_text(size = 10),
+          axis.title = element_text(size = 12, face = "bold"), 
+          legend.position = "none", 
+          axis.text.x = element_text(size = 10)) + 
+    labs(x = title) + 
+    stat_compare_means(
+      method = "kruskal.test",
+      label = "p.format",
+      label.x = 1,
+      label.y = Inf,
+      hjust = 1.1,
+      vjust = 1.5,
+      size = 3.5
+    )
+  
+  print(a_diversity_factor)
+  return(a_diversity_factor)
+}
+
+a_diversity_fs <- a_diversity_categorical(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status")
+a_diversity_fs2 <- a_diversity_categorical(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity")
+a_diversity_q1 <- a_diversity_categorical(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)")
+a_diversity_q2 <- a_diversity_categorical(ps_gutMicro, "Q2", "Unable to eat preferred kinds of food due to lack of resources (Q2)")
+a_diversity_q3 <- a_diversity_categorical(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)")
+a_diversity_q4 <- a_diversity_categorical(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)")
+a_diversity_q5 <- a_diversity_categorical(ps_gutMicro, "Q5", "Eat a smaller meal than required due to lack of resources (Q5)")
+a_diversity_q6 <- a_diversity_categorical(ps_gutMicro, "Q6", "Eat fewer meals in a day due to lack of resources (Q6)")
+a_diversity_q7 <- a_diversity_categorical(ps_gutMicro, "Q7", "Ever no food to eat (Q7)")
+a_diversity_q8 <- a_diversity_categorical(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)")
+a_diversity_q9 <- a_diversity_categorical(ps_gutMicro, "Q9", "Whole day and night without eating due to lack of resources (Q9)")
+
+ggsave("fs2_alpha.png", plot = a_diversity_fs2, width = 6, height = 4, dpi = 500)
+ggsave("q1_alpha.png", plot = a_diversity_q1, width = 6, height = 4, dpi = 500)
+ggsave("q2_alpha.png", plot = a_diversity_q2, width = 6, height = 4, dpi = 500)
+ggsave("q3_alpha.png", plot = a_diversity_q3, width = 6, height = 4, dpi = 500)
+ggsave("q4_alpha.png", plot = a_diversity_q4, width = 6, height = 4, dpi = 500)
+ggsave("q5_alpha.png", plot = a_diversity_q5, width = 6, height = 4, dpi = 500)
+ggsave("q6_alpha.png", plot = a_diversity_q6, width = 6, height = 4, dpi = 500)
+ggsave("q7_alpha.png", plot = a_diversity_q7, width = 6, height = 4, dpi = 500)
+ggsave("q8_alpha.png", plot = a_diversity_q8, width = 6, height = 4, dpi = 500)
+ggsave("q9_alpha.png", plot = a_diversity_q9, width = 6, height = 4, dpi = 500)
+```
+
+## Beta Diversity Analysis
+```{r beta}
+
+beta_diversity_bray_plot_categorical <- function(ps, variable, title_name=variable, seed = 5) {
+  set.seed(seed)
+  
+  # Convert sample data to data frame
+  sam_data <- as(sample_data(ps), "data.frame")
+  
+  # First remove NAs
+  keep_samples <- !is.na(sam_data[[variable]])
+  ps_filtered <- prune_samples(keep_samples, ps)
+  
+  # Get updated sample data after NA removal
+  sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
+  
+  # Count occurrences of each value in the variable
+  value_counts <- table(sam_data_filtered[[variable]])
+  print(value_counts)  # View group sizes
+  
+  # Identify values that appear at least 3 times (PCOA plot can't draw ellipse with < 3 points)
+  valid_values <- names(value_counts)[value_counts >= 3]
+  
+  # Filter samples to only include those with valid values
+  final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
+  ps_final <- prune_samples(final_keep_samples, ps_filtered)
+  
+  # Get final sample data
+  sam_data_final <- as(sample_data(ps_final), "data.frame")
+  
+  # Perform PCoA
+  pcoares <- get_pcoa(obj = ps_final, distmethod = "bray", method = "hellinger")
+  
+  # Perform PERMANOVA to get p-value
+  physeq_dist <- phyloseq::distance(ps_final, method = "bray")
+  permanova <- vegan::adonis2(physeq_dist ~ sam_data_final[[variable]])
+  p_value <- permanova$`Pr(>F)`[1]
+  
+  # Format p-value for display
+  p_text <- ifelse(p_value < 0.001, "p < 0.001", 
+                   paste("p =", format(round(p_value, 3), nsmall = 3)))
+  
+  # Create PCoA plot
+  pcoaplot <- ggordpoint(obj = pcoares, biplot = FALSE, speciesannot = TRUE,
+                         factorNames = c(variable), ellipse = TRUE, linesize = 1.5, 
+                         ellipse_linewd = 1, ellipse_lty = 2) +
+    ggtitle(title_name) + 
+    guides(color=guide_legend(title=title_name, 
+                              override.aes = list(size = 4))) +
+    theme( 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 20)) +
+    # Add p-value annotation
+    annotate("text", x = Inf, y = Inf, 
+             label = p_text, 
+             hjust = 1.1, vjust = 1.5, 
+             size = 4, fontface = "bold") +
+    labs(color = paste("Kitchen Floor Material"))
+  
+  print(pcoaplot)
+  return(pcoaplot)
+}
+
+
+beta_diversity_jaccard_plot_categorical <- function(ps, variable, title_name=variable, seed = 5) {
+  set.seed(seed)
+  
+  sam_data <- as(sample_data(ps), "data.frame")
+  keep_samples <- !is.na(sam_data[[variable]])
+  ps_filtered <- prune_samples(keep_samples, ps)
+  sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
+  value_counts <- table(sam_data_filtered[[variable]])
+  print(value_counts)
+  valid_values <- names(value_counts)[value_counts >= 3]
+  final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
+  ps_final <- prune_samples(final_keep_samples, ps_filtered)
+  sam_data_final <- as(sample_data(ps_final), "data.frame")
+  
+  # PCoA with Jaccard
+  pcoares <- get_pcoa(obj = ps_final, distmethod = "jaccard", method = "hellinger")
+  
+  # PERMANOVA with Jaccard
+  physeq_dist <- phyloseq::distance(ps_final, method = "jaccard")
+  permanova <- vegan::adonis2(physeq_dist ~ sam_data_final[[variable]])
+  p_value <- permanova$`Pr(>F)`[1]
+  p_text <- ifelse(p_value < 0.001, "p < 0.001", 
+                   paste("p =", format(round(p_value, 3), nsmall = 3)))
+  
+  pcoaplot <- ggordpoint(obj = pcoares, biplot = FALSE, speciesannot = TRUE,
+                         factorNames = c(variable), ellipse = TRUE, linesize = 1.5, 
+                         ellipse_linewd = 1, ellipse_lty = 2) +
+    ggtitle(title_name) + 
+    guides(color=guide_legend(title=title_name, override.aes = list(size = 4))) +
+    theme(legend.title = element_blank(), legend.text = element_text(size = 20)) +
+    annotate("text", x = Inf, y = Inf, 
+             label = p_text, 
+             hjust = 1.1, vjust = 1.5, 
+             size = 4, fontface = "bold") +
+    labs(color = variable)
+  print(pcoaplot)
+  return(pcoaplot)
+}
+
+
+b_diversity_bray_fs <- beta_diversity_bray_plot_categorical(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status")
+b_diversity_bray_fs2 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity")
+b_diversity_bray_q1 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)")
+b_diversity_bray_q2 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q2", "Unable to eat preferred kinds of food due to lack of resources (Q2)")
+b_diversity_bray_q3 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)")
+b_diversity_bray_q4 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)")
+b_diversity_bray_q5 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q5", "Household member had to eat a smaller meal than you (Q5)")
+b_diversity_bray_q6 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q6", "Household member had to eat fewer meals in a day (Q6)")
+b_diversity_bray_q7 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q7", "Ever no food to eat (Q7)")
+b_diversity_bray_q8 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)")
+b_diversity_bray_q9 <- beta_diversity_bray_plot_categorical(ps_gutMicro, "Q9", "Whole day and night without eating (Q9)")
+
+ggsave("fs_beta_bray.png", plot = b_diversity_bray_fs, width = 6.5, height = 4, dpi = 500)
+ggsave("fs2_beta_bray.png", plot = b_diversity_bray_fs2, width = 6.5, height = 4, dpi = 500)
+ggsave("q1_beta_bray.png", plot = b_diversity_bray_q1, width = 5.5, height = 4, dpi = 500)
+ggsave("q2_beta_bray.png", plot = b_diversity_bray_q2, width = 5.5, height = 4, dpi = 500)
+ggsave("q3_beta_bray.png", plot = b_diversity_bray_q3, width = 5.5, height = 4, dpi = 500)
+ggsave("q4_beta_bray.png", plot = b_diversity_bray_q4, width = 5.5, height = 4, dpi = 500)
+ggsave("q5_beta_bray.png", plot = b_diversity_bray_q5, width = 5.5, height = 4, dpi = 500)
+ggsave("q6_beta_bray.png", plot = b_diversity_bray_q6, width = 5.5, height = 4, dpi = 500)
+ggsave("q7_beta_bray.png", plot = b_diversity_bray_q7, width = 5.5, height = 4, dpi = 500)
+ggsave("q8_beta_bray.png", plot = b_diversity_bray_q8, width = 5.5, height = 4, dpi = 500)
+ggsave("q9_beta_bray.png", plot = b_diversity_bray_q9, width = 5.5, height = 4, dpi = 500)
+
+
+b_diversity_jaccard_fs <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status")
+b_diversity_jaccard_fs2 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity")
+b_diversity_jaccard_q1 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)")
+b_diversity_jaccard_q2 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q2", "Unable to eat preferred kinds of food due to lack of resources (Q2)")
+b_diversity_jaccard_q3 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)")
+b_diversity_jaccard_q4 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)")
+b_diversity_jaccard_q5 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q5", "Household member had to eat a smaller meal than you (Q5)")
+b_diversity_jaccard_q6 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q6", "Household member had to eat fewer meals in a day (Q6)")
+b_diversity_jaccard_q7 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q7", "Ever no food to eat (Q7)")
+b_diversity_jaccard_q8 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)")
+b_diversity_jaccard_q9 <- beta_diversity_jaccard_plot_categorical(ps_gutMicro, "Q9", "Whole day and night without eating (Q9)")
+
+ggsave("fs_beta_jaccard.png", plot = b_diversity_jaccard_fs, width = 6.5, height = 4, dpi = 500)
+ggsave("fs2_beta_jaccard.png", plot = b_diversity_jaccard_fs2, width = 6.5, height = 4, dpi = 500)
+ggsave("q1_beta_jaccard.png", plot = b_diversity_jaccard_q1, width = 5.5, height = 4, dpi = 500)
+ggsave("q2_beta_jaccard.png", plot = b_diversity_jaccard_q2, width = 5.5, height = 4, dpi = 500)
+ggsave("q3_beta_jaccard.png", plot = b_diversity_jaccard_q3, width = 5.5, height = 4, dpi = 500)
+ggsave("q4_beta_jaccard.png", plot = b_diversity_jaccard_q4, width = 5.5, height = 4, dpi = 500)
+ggsave("q5_beta_jaccard.png", plot = b_diversity_jaccard_q5, width = 5.5, height = 4, dpi = 500)
+ggsave("q6_beta_jaccard.png", plot = b_diversity_jaccard_q6, width = 5.5, height = 4, dpi = 500)
+ggsave("q7_beta_jaccard.png", plot = b_diversity_jaccard_q7, width = 5.5, height = 4, dpi = 500)
+ggsave("q8_beta_jaccard.png", plot = b_diversity_jaccard_q8, width = 5.5, height = 4, dpi = 500)
+ggsave("q9_beta_jaccard.png", plot = b_diversity_jaccard_q9, width = 5.5, height = 4, dpi = 500)
+
+```
+
+## Relative Abundance Barplot
+```{r relative abundance}
+
+genus_barplot_categorical <- function(ps, variable, title_name=variable) {
+  
+  # Convert sample data to data frame
+  sam_data <- as(sample_data(ps), "data.frame")
+  
+  # First remove NAs
+  keep_samples <- !is.na(sam_data[[variable]])
+  ps_filtered <- prune_samples(keep_samples, ps)
+  
+  # Get updated sample data after NA removal
+  sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
+  
+  # Count occurrences of each value in the variable
+  value_counts <- table(sam_data_filtered[[variable]])
+  
+  # Identify values that appear at least 5 times
+  valid_values <- names(value_counts)[value_counts >= 2]
+  
+  # Filter samples to only include those with valid values
+  final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
+  ps_final <- prune_samples(final_keep_samples, ps_filtered)
+  
+  genustaxa <- get_taxadf(obj = ps_final, taxlevel = 6)
+  barplot <- ggbartax(obj = genustaxa, facetNames = variable, plotgroup = TRUE, topn = 15) +
+    xlab(NULL) +
+    ylab("Relative Abundance (%)") +
+    labs(title = title_name, fill = NULL) +  
+    scale_fill_manual(values = c(colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(31))) +
+    guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5, ncol = 2)) +
+    theme_classic() +
+    theme(strip.background = element_blank(), axis.text.x.bottom = element_text(angle = -90))
+  
+  print(barplot)
+  return(barplot)
+}
+
+rel_abundance_fs <- genus_barplot_categorical(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status")
+rel_abundance_fs2 <- genus_barplot_categorical(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity")
+rel_abundance_q1 <- genus_barplot_categorical(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)")
+rel_abundance_q2 <- genus_barplot_categorical(ps_gutMicro, "Q2", "Unable to eat preferred kinds of food due to lack of resources (Q2)")
+rel_abundance_q3 <- genus_barplot_categorical(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)")
+rel_abundance_q4 <- genus_barplot_categorical(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)")
+rel_abundance_q5 <- genus_barplot_categorical(ps_gutMicro, "Q5", "Eat a smaller meal than required due to lack of resources (Q5)")
+rel_abundance_q6 <- genus_barplot_categorical(ps_gutMicro, "Q6", "Eat fewer meals in a day due to lack of resources (Q6)")
+rel_abundance_q7 <- genus_barplot_categorical(ps_gutMicro, "Q7", "Ever no food to eat (Q7)")
+rel_abundance_q8 <- genus_barplot_categorical(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)")
+rel_abundance_q9 <- genus_barplot_categorical(ps_gutMicro, "Q9", "Whole day and night without eating due to lack of resources (Q9)")
+
+
+ggsave("fs_rel_abundance.png", plot = rel_abundance_fs, width = 6, height = 4, dpi = 500)
+ggsave("fs2_rel_abundance.png", plot = rel_abundance_fs2, width = 6, height = 4, dpi = 500)
+ggsave("q1_rel_abundance.png", plot = rel_abundance_q1, width = 6, height = 4, dpi = 500)
+ggsave("q2_rel_abundance.png", plot = rel_abundance_q2, width = 6, height = 4, dpi = 500)
+ggsave("q3_rel_abundance.png", plot = rel_abundance_q3, width = 6, height = 4, dpi = 500)
+ggsave("q4_rel_abundance.png", plot = rel_abundance_q4, width = 6, height = 4, dpi = 500)
+ggsave("q5_rel_abundance.png", plot = rel_abundance_q5, width = 6, height = 4, dpi = 500)
+ggsave("q6_rel_abundance.png", plot = rel_abundance_q6, width = 6, height = 4, dpi = 500)
+ggsave("q7_rel_abundance.png", plot = rel_abundance_q7, width = 6, height = 4, dpi = 500)
+ggsave("q8_rel_abundance.png", plot = rel_abundance_q8, width = 6, height = 4, dpi = 500)
+ggsave("q9_rel_abundance.png", plot = rel_abundance_q9, width = 6, height = 4, dpi = 500)
+```
+
+## Differential Abundace Analysis w/ Maaslin2
+```{r diff abundance}
+
+run_maaslin2_and_plot <- function(
+  ps_obj, 
+  variable, 
+  title_name = variable, 
+  taxlevel = "Genus",
+  qval_sig_max = 0.1,
+  min_prevalence = 0.05,
+  min_samples = 5,               # Minimum number of samples with abundance > 0
+  min_abundance_mean = 0.0005,    # Minimum mean relative abundance across all samples
+  min_abundance_max  = 0.001,     # Minimum *max* relative abundance in any sample
+  adjust_vars = c("Age", "sex"),
+  remove_unassigned = TRUE
+) {
+  # Prepare feature table (taxa as rows, samples as columns)
+  otumat <- as.data.frame(otu_table(ps_obj))
+  if (!taxa_are_rows(ps_obj)) otumat <- t(otumat)
+  
+  # Aggregate at desired taxonomic level
+  taxmat <- as.data.frame(tax_table(ps_obj))
+  if (!(taxlevel %in% colnames(taxmat))) stop("taxlevel not in taxonomy table!")
+  
+  # Assign "Unassigned" to missing genus
+  otumat$Taxon <- taxmat[rownames(otumat), taxlevel]
+  otumat$Taxon[is.na(otumat$Taxon) | otumat$Taxon == "" ] <- "Unassigned"
+  
+  # Aggregate counts at genus level
+  feature_table <- otumat %>%
+    group_by(Taxon) %>%
+    summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+    column_to_rownames("Taxon")
+  
+  # Convert to relative abundance (to apply abundance filters)
+  feature_table_rel <- sweep(feature_table, 2, colSums(feature_table), "/")
+  
+  # Filtering step: prevalence, mean abundance, and max abundance
+  present_counts <- rowSums(feature_table_rel > 0)
+  mean_abund <- rowMeans(feature_table_rel)
+  max_abund <- apply(feature_table_rel, 1, max)
+  
+  keep_taxa <- (present_counts > (min_prevalence * ncol(feature_table_rel))) &
+               (present_counts >= min_samples) &
+               (mean_abund >= min_abundance_mean | max_abund >= min_abundance_max)
+  
+  feature_table <- feature_table[keep_taxa, ]
+  feature_table_rel <- feature_table_rel[keep_taxa, ]
+  
+  # Prepare metadata
+  meta <- as(sample_data(ps_obj), "data.frame")
+  meta <- meta[ , , drop = FALSE]
+  
+  # Match samples between metadata and feature table
+  common_samples <- intersect(colnames(feature_table), rownames(meta))
+  feature_table <- feature_table[ , common_samples, drop = FALSE]
+  meta <- meta[common_samples, , drop = FALSE]
+  
+  # Compose fixed effects
+  fixed_effects <- unique(c(variable, adjust_vars))
+  fixed_effects <- fixed_effects[fixed_effects %in% colnames(meta)]
+  
+  # Run MaAsLin2 
+  fit_data <- Maaslin2(
+    input_data = as.data.frame(t(feature_table)),
+    input_metadata = meta,
+    output = tempdir(),   
+    fixed_effects = fixed_effects,
+    normalization = "TSS",
+    min_prevalence = min_prevalence
+  )
+  
+  # Results
+  results <- fit_data$results
+  results_var <- results[results$metadata == variable, ]
+  results_var <- results_var %>%
+    dplyr::mutate(sig = ifelse(qval < qval_sig_max, "Significant", "NS"))
+  
+  # Only keep one result per genus
+  results_var_unique <- results_var %>%
+    group_by(feature) %>%
+    slice_min(order_by = qval, n = 1, with_ties = FALSE) %>%
+    ungroup()
+  
+  # Prevalence and abundance calculation (add to output)
+  prevalence_df <- data.frame(
+    feature = rownames(feature_table_rel),
+    prevalence = rowSums(feature_table_rel > 0),
+    prevalence_frac = rowSums(feature_table_rel > 0) / ncol(feature_table_rel),
+    mean_abund = rowMeans(feature_table_rel),
+    max_abund = apply(feature_table_rel, 1, max)
+  )
+  results_var_unique <- left_join(results_var_unique, prevalence_df, by = "feature")
+  
+  # Keep Only Genus Names That are in the Original Genus Column
+  genus_list <- unique(taxmat[[taxlevel]])
+  genus_list <- genus_list[!is.na(genus_list) & genus_list != ""]
+  if (remove_unassigned) {
+    genus_list <- genus_list[genus_list != "Unassigned"]
+  }
+  results_var_unique <- results_var_unique %>% filter(feature %in% genus_list)
+  
+  # Plot: Label rare significant genera
+  results_var_unique <- results_var_unique %>%
+    mutate(
+      label_flag = ifelse(
+        sig == "Significant" & prevalence < min_samples, 
+        paste0(feature, " (rare)"), 
+        ifelse(sig == "Significant", feature, "")
+      )
+    )
+  
+  p <- ggplot(results_var_unique, aes(x = coef, y = -log10(qval), color = sig)) +
+    geom_point() +
+    geom_text_repel(
+      aes(label = label_flag),
+      size = 3, 
+      max.overlaps = 12, 
+      color = "red",
+      force = 2,
+      box.padding = 0.5
+    ) +
+    scale_color_manual(values = c("Significant" = "red", "NS" = "black")) +
+    labs(
+      x = "Effect Size Coefficient",
+      y = "-log10(FDR)",
+      title = title_name
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  print(p)
+  n_rare_sig <- sum(results_var_unique$sig == "Significant" & results_var_unique$prevalence < min_samples)
+  if (n_rare_sig > 0) {
+    message(sprintf("Warning: %d significant genera are present in fewer than %d samples (labeled as (rare)). Interpret with caution!", n_rare_sig, min_samples))
+  }
+  return(list(plot = p, table = results_var_unique, all_results = results))
+}
+
+association_boxplot <- function(ps_obj, genus, variable, title_name = genus, variable_name = variable, taxlevel = "Genus") {
+  # Extract relative abundance of the genus across samples
+  otumat <- as.data.frame(otu_table(ps_obj))
+  if (!taxa_are_rows(ps_obj)) otumat <- t(otumat)
+  taxmat <- as.data.frame(tax_table(ps_obj))
+  otumat$Taxon <- taxmat[rownames(otumat), taxlevel]
+  feature_table <- otumat %>%
+    group_by(Taxon) %>%
+    summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+    column_to_rownames("Taxon")
+  
+  # Use relative abundance
+  feature_table_rel <- sweep(feature_table, 2, colSums(feature_table), "/")
+  genus_abund <- as.numeric(feature_table_rel[genus, ])
+  sample_names <- colnames(feature_table_rel)
+  
+  # Prepare metadata
+  meta <- as(sample_data(ps_obj), "data.frame")
+  meta <- meta[sample_names, , drop = FALSE]
+  df <- data.frame(
+    Sample = sample_names,
+    Abundance = genus_abund,
+    Group = as.factor(meta[[variable]])
+  )
+  
+  # Plot
+  p <- ggplot(df, aes(x = Group, y = Abundance, fill = Group)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.6, color = "black") +
+    labs(
+      title = title_name,
+      x = variable_name,
+      y = paste("Relative Abundance")
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  print(p)
+  return(p)
+}
+
+plot_all_significant_boxplots <- function(
+  ps_obj, 
+  maaslin2_table, 
+  variable = "FoodSecure_vs_FoodInsecure", 
+  variable_name = variable,
+  taxlevel = "Genus"
+) {
+  library(ggplot2)
+  library(dplyr)
+  library(phyloseq)
+  
+  sig_genera <- maaslin2_table %>%
+    filter(sig == "Significant", metadata == variable) %>%
+    pull(feature) %>%
+    unique()
+  
+  # Helper function for a single genus
+  plot_single <- function(genus) {
+    qval <- maaslin2_table %>%
+      filter(feature == genus, metadata == variable) %>%
+      arrange(qval) %>%
+      slice(1) %>%
+      pull(qval)
+    qval_label <- if(length(qval) == 0) "NA" else formatC(qval, digits = 3, format = "f")
+    auto_title <- paste0(genus, " (q = ", qval_label, ")")
+    
+    otumat <- as.data.frame(otu_table(ps_obj))
+    if (!taxa_are_rows(ps_obj)) otumat <- t(otumat)
+    taxmat <- as.data.frame(tax_table(ps_obj))
+    otumat$Taxon <- taxmat[rownames(otumat), taxlevel]
+    feature_table <- otumat %>%
+      group_by(Taxon) %>%
+      summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+      column_to_rownames("Taxon")
+    feature_table_rel <- sweep(feature_table, 2, colSums(feature_table), "/")
+    if (!genus %in% rownames(feature_table_rel)) return(NULL)
+    genus_abund <- as.numeric(feature_table_rel[genus, ])
+    sample_names <- colnames(feature_table_rel)
+    meta <- as(sample_data(ps_obj), "data.frame")
+    meta <- meta[sample_names, , drop = FALSE]
+    df <- data.frame(
+      Sample = sample_names,
+      Abundance = genus_abund,
+      Group = as.factor(meta[[variable]])
+    )
+    ggplot(df, aes(x = Group, y = Abundance, fill = Group)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_jitter(width = 0.2, alpha = 0.6, color = "black") +
+      labs(
+        title = auto_title,
+        x = variable_name,
+        y = "Relative Abundance"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "none")
+  }
+  
+  # Loop and collect
+  plot_list <- lapply(sig_genera, plot_single)
+  names(plot_list) <- sig_genera
+  plot_list <- plot_list[!sapply(plot_list, is.null)]  # Remove any nulls
+  print(paste("Created", length(plot_list), "boxplots for significant genera."))
+  plot_list
+}
+
+
+fs2_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity", qval_sig_max = 0.2) 
+
+food_security_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status", qval_sig_max = 0.2) 
+fs_boxplots <- plot_all_significant_boxplots(
+  ps_obj = ps_gutMicro,
+  maaslin2_table = food_security_maaslin2$table,
+  variable = "FoodSecure_vs_FoodInsecure",
+  variable_name = "Food Security Status"
+)
+print(fs_boxplots[[1]])
+
+q1_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)", qval_sig_max = 0.2)
+q2_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q2","Unable to eat preferred kinds of food due to lack of resources (Q2)", qval_sig_max = 0.2)
+
+q3_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)", qval_sig_max = 0.2)
+q3_boxplots <- plot_all_significant_boxplots(
+  ps_obj = ps_gutMicro,
+  maaslin2_table = q3_maaslin2$table,
+  variable = "Q3"
+)
+print(q3_boxplots[[1]])
+print(q3_boxplots[[2]])
+
+q4_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)", qval_sig_max = 0.2)
+q4_boxplots <- plot_all_significant_boxplots(
+  ps_obj = ps_gutMicro,
+  maaslin2_table = q4_maaslin2$table,
+  variable = "Q4"
+)
+print(q4_boxplots[[1]])
+print(q4_boxplots[[2]])
+print(q4_boxplots[[3]])
+
+q5_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q5", "Household member had to eat a smaller meal than you (Q5)", qval_sig_max = 0.2)
+q5_boxplots <- plot_all_significant_boxplots(
+  ps_obj = ps_gutMicro,
+  maaslin2_table = q5_maaslin2$table,
+  variable = "Q5"
+)
+print(q5_boxplots[[1]])
+
+q6_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q6", "Household member had to eat fewer meals in a day (Q6)", qval_sig_max = 0.2)
+q7_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q7", "Ever no food to eat (Q7)", qval_sig_max = 0.2)
+q8_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)", qval_sig_max = 0.2)
+q9_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q9", "Whole day and night without eating (Q9)", qval_sig_max = 0.2)
+
+# To save all plots to files:
+# for (genus in names(all_boxplots)) {
+#   ggsave(filename = paste0("boxplot_", genus, ".png"), plot = all_boxplots[[genus]], width = 5, height = 4)
+# }
+
+ggsave("fs2_volc.png", plot = fs2_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("fs_volc.png", plot = food_security_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("fs_association.png", plot = fs_association, width = 6, height = 4, dpi = 500)
+ggsave("q1_volc.png", plot = q1_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q2_volc.png", plot = q2_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q3_volc.png", plot = q3_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q3_association1.png", plot = q3_boxplots[[1]], width = 4.5, height = 4, dpi = 400)
+ggsave("q3_association2.png", plot = q3_boxplots[[2]], width = 4.5, height = 4, dpi = 400)
+ggsave("q4_volc.png", plot = q4_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q4_association1.png", plot = q4_boxplots[[1]], width = 3, height = 4, dpi = 400)
+ggsave("q4_association2.png", plot = q4_boxplots[[2]], width = 3, height = 4, dpi = 400)
+ggsave("q4_association3.png", plot = q4_boxplots[[3]], width = 3, height = 4, dpi = 400)
+ggsave("q5_volc.png", plot = q5_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q5_association.png", plot = q5_boxplots[[1]], width = 6, height = 4, dpi = 400)
+
+ggsave("q6_volc.png", plot = q6_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q7_volc.png", plot = q7_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q8_volc.png", plot = q8_maaslin2$plot, width = 6, height = 4, dpi = 500)
+ggsave("q9_volc.png", plot = q9_maaslin2$plot, width = 6, height = 4, dpi = 500)
+```
+
+## Linear Discriminant analysis w/ Lefse
+```{r diff Lefse}
+create_lefse_barplot <- function(ps, factor, title_name = factor, lda_cut = 3, wil_cut = 0.01, kw_cut = 0.01) {
+  # Extract sample data
+  sample_df <- data.frame(sample_data(ps))
+
+  # Get the variable of interest
+  var_vector <- sample_df[[factor]]
+
+  # Exclude NAs
+  var_vector_no_na <- var_vector[!is.na(var_vector)]
+
+  keep_samples <- rownames(sample_df)[!is.na(var_vector)]
+  ps_subset <- prune_samples(keep_samples, ps)
+  
+  # Run LEfSe
+  mm_lefse <- tryCatch(
+    run_lefse(
+      ps_subset,
+      group = factor,
+      wilcoxon_cutoff = wil_cut,
+      kw_cutoff = kw_cut,
+      lda_cutoff = lda_cut,
+      multigrp_strat = TRUE
+    ),
+    error = function(e) {
+      message(paste("LefSe failed for", factor, ":", e$message))
+      return(NULL)
+    }
+  )
+
+  # Remove species-level features (those containing 's__')
+  if (!is.null(mm_lefse)) {
+    mm_lefse@marker_table <- mm_lefse@marker_table[!grepl("s__", mm_lefse@marker_table$feature), ]
+  }
+
+  # Plot or fallback
+  if (!is.null(mm_lefse) && nrow(mm_lefse@marker_table) > 0) {
+    lefse_bar_plot <- tryCatch(
+      plot_ef_bar(mm_lefse) +
+        ggtitle(title_name),
+      error = function(e) {
+        message(paste("Failed to create LefSe bar plot:", e$message))
+        ggplot() + annotate("text", x = 1, y = 1, label = "LefSe plot failed", size = 6) + theme_void()
+      }
+    )
+  } else {
+    lefse_bar_plot <- ggplot() +
+      annotate("text", x = 1, y = 1, label = "No significant non-species features", size = 6) +
+      theme_void()
+  }
+
+  print(lefse_bar_plot)
+  return(lefse_bar_plot)
+}
+
+food_security_lefse <- create_lefse_barplot(ps_gutMicro, "FoodSecure_vs_FoodInsecure", "Food Security Status")
+fs2_lefse <- create_lefse_barplot(ps_gutMicro, "Food_Security_Grad", "Food Security Status by Severity", lda_cut = 1, wil_cut = 0.1, kw_cut = 0.1)
+q1_lefse <- create_lefse_barplot(ps_gutMicro, "Q1", "Worry about not having enough food (Q1)")
+q2_lefse <- create_lefse_barplot(ps_gutMicro, "Q2","Unable to eat preferred kinds of food due to lack of resources (Q2)")
+q3_lefse <- create_lefse_barplot(ps_gutMicro, "Q3", "Eat a limited variety of food due to lack of resources (Q3)")
+q4_lefse <- create_lefse_barplot(ps_gutMicro, "Q4", "Eat some disliked foods due to lack of resources (Q4)")
+q5_lefse <- create_lefse_barplot(ps_gutMicro, "Q5", "Household member had to eat a smaller meal than you (Q5)")
+q6_lefse <- create_lefse_barplot(ps_gutMicro, "Q6", "Household member had to eat fewer meals in a day (Q6)")
+q7_lefse <- create_lefse_barplot(ps_gutMicro, "Q7", "Ever no food to eat (Q7)")
+q8_lefse <- create_lefse_barplot(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)", lda_cut = 2, wil_cut = 0.05) 
+q9_lefse <- create_lefse_barplot(ps_gutMicro, "Q9", "Whole day and night without eating (Q9)", lda_cut = 2, wil_cut = 0.1) 
+
+
+ggsave("fs_lefse.png", plot = food_security_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q1_lefse.png", plot = q1_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q2_lefse.png", plot = q2_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q3_lefse.png", plot = q3_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q4_lefse.png", plot = q4_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q5_lefse.png", plot = q5_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q6_lefse.png", plot = q6_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q7_lefse.png", plot = q7_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q8_lefse.png", plot = q8_lefse, width = 8, height = 4, dpi = 500)
+ggsave("q9_lefse.png", plot = q9_lefse, width = 8, height = 4, dpi = 500)
+```
+
+
+## ML Model Training (achieved 84% accuracy)
+```{r ML training}
+cv_predict_food_security_clr_xgb <- function(
+  ps_obj,
+  outcome_var = "FoodSecure_vs_FoodInsecure",
+  min_prevalence = 0.05,
+  nfolds = 10,
+  seed = 100,
+  meta_cols = c("Ascaris", "Trichuris", "Hookworm"),
+  n_cores = 4 # number of cores for parallel processing
+) {
+  set.seed(seed)
+
+  # --- SET UP PARALLEL BACKEND ---
+  cl <- makeCluster(n_cores)
+  registerDoParallel(cl)
+
+  # Helper: aggregate at desired level and use real taxon names
+  get_tax_matrix <- function(ps, taxlevel, prefix) {
+    ps_tax <- tax_glom(ps, taxlevel)
+    otumat <- as.data.frame(otu_table(ps_tax))
+    if (!taxa_are_rows(ps_tax)) otumat <- t(otumat)
+    taxmat <- as.data.frame(tax_table(ps_tax))
+    tax_names <- taxmat[[taxlevel]]
+    tax_names[is.na(tax_names) | tax_names == ""] <- "Unassigned"
+    rownames(otumat) <- paste0(prefix, make.unique(tax_names))
+    present_counts <- rowSums(otumat > 0)
+    keep <- present_counts >= (min_prevalence * ncol(otumat))
+    otumat <- otumat[keep, , drop=FALSE]
+    return(otumat)
+  }
+
+  # Get Family and Genus matrices
+  fam_tab <- get_tax_matrix(ps_obj, "Family", "F__")
+  gen_tab <- get_tax_matrix(ps_obj, "Genus", "G__")
+  all_feat_tab <- rbind(fam_tab, gen_tab)
+
+  # CLR transformation
+  all_feat_tab[all_feat_tab == 0] <- 1e-6
+  clr_mat <- compositions::clr(all_feat_tab)
+  clr_mat <- t(clr_mat)
+
+  # Prepare response and parasite metadata
+  meta <- as.data.frame(sample_data(ps_obj))
+  clr_samples <- rownames(clr_mat)
+  meta <- meta[clr_samples, , drop = FALSE]
+  y <- as.factor(meta[[outcome_var]])
+  keep <- !is.na(y)
+  clr_mat <- clr_mat[keep, , drop=FALSE]
+  meta <- meta[keep, , drop=FALSE]
+  y <- y[keep]
+  levels(y) <- make.names(levels(y))
+
+  # metadata cols (0/1)
+  meta_cols <- intersect(meta_cols, colnames(meta))
+  meta_features <- meta[, meta_cols, drop = FALSE]
+  meta_features[] <- lapply(meta_features, function(x) as.numeric(as.character(x)))
+  meta_features <- meta_features[, sapply(meta_features, function(x) all(x %in% c(0, 1, NA))), drop = FALSE]
+
+  # Combine CLR features and parasite metadata
+  X_full <- cbind(clr_mat, meta_features)
+
+  # Remove near-zero variance features
+  nzv <- caret::nearZeroVar(X_full)
+  if (length(nzv) > 0) X_full <- X_full[, -nzv, drop=FALSE]
+
+  # DEEP Hyperparameter grid for XGBoost
+  xgb_grid <- expand.grid(
+    nrounds = c(50, 100, 200, 400, 800),
+    max_depth = c(2, 3, 4, 5, 6, 8, 10),
+    eta = c(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2),
+    gamma = c(0, 0.05, 0.1, 0.2, 0.3),
+    colsample_bytree = c(0.5, 0.7, 0.8, 0.9, 1.0),
+    min_child_weight = c(1, 2, 5, 10),
+    subsample = c(0.5, 0.7, 0.8, 0.9, 1.0)
+  )
+
+  fitControl <- caret::trainControl(
+    method = "cv",
+    number = nfolds,
+    classProbs = TRUE,
+    savePredictions = "final",
+    allowParallel = TRUE  # <--- key argument for parallel
+  )
+
+  xgb_fit <- caret::train(
+    x = X_full,
+    y = y,
+    method = "xgbTree",
+    tuneGrid = xgb_grid,
+    trControl = fitControl,
+    verbose = FALSE
+  )
+
+  # Results
+  overall_acc <- max(xgb_fit$results$Accuracy)
+  best_params <- xgb_fit$bestTune
+
+  # Variable importance
+  varimp <- caret::varImp(xgb_fit, scale = FALSE)$importance
+  varimp_df <- tibble(Feature = rownames(varimp), Importance = varimp[,1]) %>%
+    arrange(desc(Importance)) %>%
+    mutate(Level = dplyr::case_when(
+      grepl("^F__", Feature) ~ "Family",
+      grepl("^G__", Feature) ~ "Genus",
+      Feature %in% meta_cols ~ "Metadata",
+      TRUE ~ "Other"
+    ))
+
+  preds <- xgb_fit$pred$pred[order(xgb_fit$pred$rowIndex)]
+  y_true <- xgb_fit$pred$obs[order(xgb_fit$pred$rowIndex)]
+  overall_cm <- caret::confusionMatrix(preds, y_true)
+
+  # STOP cluster after training!
+  stopCluster(cl)
+  registerDoSEQ() # revert to sequential
+
+  return(list(
+    overall_accuracy = overall_acc,
+    best_params = best_params,
+    confusion_matrix = overall_cm,
+    feature_importance = varimp_df,
+    predictions = preds,
+    y_true = y_true,
+    xgb_fit = xgb_fit
+  ))
+}
+
+results_xgb_parallel <- cv_predict_food_security_clr_xgb(ps_gutMicro, n_cores = 6)
+results_xgb_parallel$confusion_matrix
+head(results_xgb_parallel$feature_importance, 50)
+
+results_xgb_parallel <- readRDS("results_xgb_parallel_84.rds")
+results_xgb_parallel$confusion_matrix
+head(results_xgb_parallel$feature_importance, 50)
+```
+
+## ROC, Variable Importance, and Heatmap plots
+```{r ml plots}
+
+plot_roc_curve_gg <- function(model_results, positive_class = NULL) {
+  
+  y_true <- model_results$y_true
+  if (is.null(positive_class)) {
+    positive_class <- levels(y_true)[1]
+  }
+  pred_prob <- model_results$xgb_fit$pred %>%
+    filter(obs %in% levels(y_true)) %>%
+    arrange(rowIndex) %>%
+    pull(!!as.name(positive_class))
+  
+  roc_obj <- roc(y_true, pred_prob, levels = rev(levels(y_true)), direction = "<")
+  auc_value <- auc(roc_obj)
+  
+  ggroc(roc_obj, legacy.axes = TRUE, colour = "darkgreen", size = 1.3) +
+    geom_abline(linetype = "dashed", color = "gray50") +
+    labs(
+      title = sprintf("ROC Curve (AUC = %.2f)", auc_value),
+      x = "False Positive Rate (1 - Specificity)",
+      y = "True Positive Rate (Sensitivity)"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+plot_top_importance <- function(model_results, n_top = 10, bar_color = "#2c7bb6") {
+  
+  varimp <- model_results$feature_importance %>% 
+    arrange(desc(Importance)) %>%
+    head(n_top)
+  
+  ggplot(varimp, aes(x = reorder(Feature, Importance), y = Importance)) +
+    geom_bar(stat = "identity", fill = bar_color) +
+    coord_flip() +
+    labs(
+      title = paste("Top", n_top, "Feature Importance"),
+      x = "",
+      y = "Importance"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+}
+
+plot_top_feature_heatmap_clr <- function(
+  ps_obj,
+  model_results,
+  n_top = 10,
+  metadata_vars = c("Ascaris", "Trichuris", "Hookworm"),
+  outcome_var = "FoodSecure_vs_FoodInsecure",
+  min_prevalence = 0.05
+) {
+  
+  # 1. Top N features
+  top_features <- head(model_results$feature_importance$Feature, n_top)
+  
+  # 2. Get genus & family tables
+  get_tax_matrix <- function(ps, taxlevel, prefix) {
+    ps_tax <- tax_glom(ps, taxlevel)
+    otumat <- as.data.frame(otu_table(ps_tax))
+    if (!taxa_are_rows(ps_tax)) otumat <- t(otumat)
+    taxmat <- as.data.frame(tax_table(ps_tax))
+    tax_names <- taxmat[[taxlevel]]
+    tax_names[is.na(tax_names) | tax_names == ""] <- "Unassigned"
+    rownames(otumat) <- paste0(prefix, make.unique(tax_names))
+    present_counts <- rowSums(otumat > 0)
+    keep <- present_counts >= (min_prevalence * ncol(otumat))
+    otumat <- otumat[keep, , drop=FALSE]
+    return(otumat)
+  }
+  
+  fam_tab <- get_tax_matrix(ps_obj, "Family", "F__")
+  gen_tab <- get_tax_matrix(ps_obj, "Genus", "G__")
+  all_feat_tab <- rbind(fam_tab, gen_tab)
+  
+  # 3. CLR transformation
+  all_feat_tab[all_feat_tab == 0] <- 1e-6
+  clr_mat <- compositions::clr(all_feat_tab)
+  clr_mat <- t(clr_mat)  # samples as rows, features as columns
+  
+  # 4. Get metadata (as numeric)
+  meta <- as.data.frame(sample_data(ps_obj))
+  clr_samples <- rownames(clr_mat)
+  meta <- meta[clr_samples, , drop = FALSE]
+  metadata_vars <- intersect(metadata_vars, colnames(meta))
+  metadata_features <- meta[, metadata_vars, drop = FALSE]
+  metadata_features[] <- lapply(metadata_features, function(x) as.numeric(as.character(x)))
+  
+  # 5. Combine CLR and metadata
+  X_full <- cbind(clr_mat, metadata_features)
+  # Ensure all columns are numeric
+  for (i in seq_len(ncol(X_full))) {
+    if (!is.numeric(X_full[, i])) {
+      X_full[, i] <- as.numeric(as.character(X_full[, i]))
+    }
+  }
+  
+  # 6. Subset to top features, as rows (order preserved)
+  top_feats_present <- top_features[top_features %in% colnames(X_full)]
+  if (length(top_feats_present) == 0) stop("No top features found in input matrix.")
+  heatmap_mat <- t(X_full[, top_feats_present, drop = FALSE])
+  
+  # Remove rows (features) that are all NA or all zero
+  keep_rows <- apply(heatmap_mat, 1, function(x) any(!is.na(x)) && any(x != 0))
+  heatmap_mat <- heatmap_mat[keep_rows, , drop = FALSE]
+  if (nrow(heatmap_mat) == 0) stop("No valid features to plot after removing all-NA/zero rows.")
+  
+  # 7. Get annotation for sample outcome
+  sample_anno <- as(sample_data(ps_obj), "data.frame")[, outcome_var, drop = FALSE]
+  sample_anno <- sample_anno[colnames(heatmap_mat), , drop = FALSE]
+  sample_anno[[outcome_var]] <- as.factor(as.character(sample_anno[[outcome_var]]))
+  rownames(sample_anno) <- colnames(heatmap_mat)
+  
+  # 8. Order columns by group
+  group_order <- order(sample_anno[[outcome_var]])
+  heatmap_mat <- heatmap_mat[, group_order, drop = FALSE]
+  sample_anno <- sample_anno[group_order, , drop = FALSE]
+  
+  # 9. Z-score (standardize) each feature (row)
+  heatmap_mat_scaled <- t(scale(t(heatmap_mat)))
+  heatmap_mat_scaled[is.na(heatmap_mat_scaled)] <- 0
+  
+  # 10. Plot heatmap (no clustering of samples)
+  png("top_features_heatmap.png", width = 5000, height = 1800, res = 500)
+  pheatmap::pheatmap(
+    mat = heatmap_mat_scaled,
+    annotation_col = sample_anno,
+    main = paste("Top", n_top, "Features Heatmap"),
+    clustering_method = "complete",
+    cluster_cols = FALSE,
+    cluster_rows = TRUE,
+    fontsize_row = 10,
+    fontsize_col = 7,
+    scale = "none",
+    color = colorRampPalette(c("navy", "white", "firebrick3"))(100)
+  )
+  dev.off()
+}
+
+plot_top_feature_heatmap_clr(
+  ps_obj = ps_gutMicro,
+  model_results = results_xgb_parallel,
+  n_top = 10,
+  metadata_vars = c("Ascaris", "Trichuris", "Hookworm"),
+  outcome_var = "FoodSecure_vs_FoodInsecure",
+  min_prevalence = 0.05
+)
+plot_roc_curve_gg(results_xgb_parallel)
+plot_top_importance(results_xgb_parallel, n_top = 10) 
+```
+
+```{r post-hoc}
+
+```
+
+```{r picrust}
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(tibble); library(stringr)
+  library(phyloseq)
+  library(ggplot2)
+  library(ggprism)
+  library(GGally)
+  library(ggpicrust2)
+})
+
+# Helper: clean sample IDs
+.clean_ids <- function(x){
+  x <- as.character(x)
+  x <- gsub("^UniqueID", "", x, ignore.case = TRUE)
+  x <- gsub("^X(?=\\d)", "", x, perl = TRUE)
+  trimws(x)
+}
+
+run_picrust_daa_metacyc <- function(
+  file_name,
+  ps_obj,
+  group_col,
+  recode_map   = NULL,
+  p_adj_cutoff = 0.10,
+  p_raw_cutoff = 0.05,
+  top_n        = 20,
+  min_nonzero  = 3
+){
+  # 1) Load & tidy abundance (MetaCyc)
+  raw <- readr::read_tsv(file_name, show_col_types = FALSE)
+  if (!"pathway" %in% names(raw))
+    stop("The input table must contain a 'pathway' column (MetaCyc IDs).")
+
+  abundance <- raw |>
+    select(-any_of("description")) |>
+    column_to_rownames("pathway") |>
+    as.data.frame()
+
+  # Clean sample IDs
+  colnames(abundance) <- .clean_ids(colnames(abundance))
+
+  # Ensure numeric
+  suppressWarnings(abundance[] <- lapply(abundance, as.numeric))
+
+  # Collapse duplicate sample IDs if any
+  if (any(duplicated(colnames(abundance)))) {
+    warning("Duplicated sample IDs after cleaning; collapsing by mean.")
+    abund_t <- t(abundance)
+    grp <- colnames(abundance)
+    abund_sum <- rowsum(abund_t, group = grp)
+    abundance <- t(abund_sum / as.vector(table(grp)))
+  }
+
+  # 2) Metadata
+  meta <- as(sample_data(ps_obj), "data.frame") |>
+    rownames_to_column("sample_name")
+
+  if (!group_col %in% names(meta)) {
+    stop(sprintf("Column '%s' not found in sample_data(ps_obj).", group_col))
+  }
+
+  if (!is.null(recode_map)) {
+    meta[[group_col]] <- dplyr::recode(as.character(meta[[group_col]]), !!!recode_map)
+  }
+  meta[[group_col]] <- as.factor(meta[[group_col]])
+
+  # 3) Align samples
+  common <- intersect(colnames(abundance), meta$sample_name)
+  message(sprintf("PICRUSt2 samples: %d | phyloseq samples: %d | overlap: %d",
+                  ncol(abundance), nrow(meta), length(common)))
+  if (length(common) < 3) {
+    stop("Fewer than 3 overlapping samples after cleaning.")
+  }
+
+  abundance <- abundance[, common, drop = FALSE]
+  meta      <- meta |> filter(sample_name %in% common)
+  abundance <- abundance[, meta$sample_name, drop = FALSE]
+
+  # Optional: prefilter sparse features
+  if (min_nonzero > 1L) {
+    keep <- rowSums(abundance > 0, na.rm = TRUE) >= min_nonzero
+    abundance <- abundance[keep, , drop = FALSE]
+  }
+
+  # 4) DAA (LinDA on MetaCyc)
+  daa_res <- pathway_daa(
+    abundance  = abundance,
+    metadata   = meta,
+    group      = group_col,
+    daa_method = "LinDA"
+  )
+
+  annot <- pathway_annotation(
+    pathway        = "MetaCyc",
+    daa_results_df = daa_res,
+    ko_to_kegg     = FALSE
+  )
+
+  # 5) Detect p-value columns
+  p_adj_col <- intersect(c("p_adjust","p.adjust","padj","q_value","qvalue"), names(annot))[1]
+  p_col     <- intersect(c("p_values","p.value","pvalue","p"), names(annot))[1]
+  if (is.na(p_adj_col)) stop("Adjusted p-value column not found in DAA results.")
+  if (is.na(p_col))     p_col <- p_adj_col
+
+  # Clean p-value table
+  pval_table <- annot |>
+    dplyr::transmute(
+      feature,
+      description = dplyr::coalesce(.data$description, feature),
+      p_value     = .data[[p_col]],
+      p_adjust    = .data[[p_adj_col]]
+    )
+
+  # 6) Check if adjusted p's are significant
+  # --- choose which p-values to drive the plot threshold (fallback if none sig)
+  n_sig_adj <- sum(annot[[p_adj_col]] <= p_adj_cutoff, na.rm = TRUE)
+  use_raw_p_for_plot <- (is.na(n_sig_adj) || n_sig_adj == 0)
+
+  if (use_raw_p_for_plot) {
+    message(sprintf(
+      "No pathways significant at adjusted p ≤ %.3f; using raw p-values for plotting.",
+      p_adj_cutoff
+    ))
+    # Keep all columns, but for plotting, treat raw p as the adjusted p
+    daa_for_plot <- annot
+    daa_for_plot[[p_adj_col]] <- annot[[p_col]]   # <- key line
+
+    # Rank/top-N by raw p-values
+    top_feats <- annot |>
+      dplyr::arrange(.data[[p_col]]) |>
+      dplyr::slice_head(n = top_n) |>
+      dplyr::pull(feature)
+
+    plot_threshold <- p_raw_cutoff  # use your raw-p cutoff here
+  } else {
+    daa_for_plot <- annot
+    # Rank/top-N by adjusted p (tie-break by raw p)
+    top_feats <- annot |>
+      dplyr::arrange(.data[[p_adj_col]], .data[[p_col]]) |>
+      dplyr::slice_head(n = top_n) |>
+      dplyr::pull(feature)
+
+    plot_threshold <- p_adj_cutoff
+  }
+
+
+  # 7) Plot
+  p_err <- pathway_errorbar(
+    abundance          = abundance,
+    daa_results_df     = daa_for_plot,
+    Group              = meta[[group_col]],
+    p_values_threshold = plot_threshold,
+    order              = "group",
+    select             = top_feats,
+    ko_to_kegg         = FALSE,
+    p_value_bar        = TRUE,
+    x_lab              = "description"
+  ) + ggprism::theme_prism() + theme(legend.position = "right")
+
+  # 8) Return objects only
+  invisible(list(
+    abundance          = abundance,
+    metadata           = meta,
+    daa_results        = daa_res,
+    annotated_results  = annot,
+    pval_table         = pval_table,
+    top_features       = top_feats,
+    errorbar_plot      = p_err,
+    used_raw_p_for_plot = use_raw_p_for_plot
+  ))
+}
+
+
+out <- run_picrust_daa_metacyc(
+  file_name   = "picrust_pathways_table.tsv",
+  ps_obj      = ps_gutMicro,
+  group_col   = "FoodSecure_vs_FoodInsecure",
+  recode_map  = c("0"="Food Secure","1"="Food Insecure"),
+  p_adj_cutoff = 0.10,
+  p_raw_cutoff = 0.05,
+  top_n        = 10
+)
+
+# View results in memory
+out$errorbar_plot        # display plot
+out$used_raw_p_for_plot  # TRUE if fallback happened & if adjusted p-values are not significant
+
+# print entire table (all rows)
+pval_sorted <- out$pval_table |>
+  dplyr::arrange(p_adjust, p_value)
+print(pval_sorted, n = Inf)
+
+```
