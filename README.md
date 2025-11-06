@@ -14,7 +14,7 @@ R version 4.5.1.
 
 ## Data
 All data is included in the `data` folder.
-- `zhu_working_ps.rds`: phyloseq object
+- `zhu_final_ps.rds`: phyloseq object
 - `picrust_pathways_table.tsv`: picrust2 pathways through Nephele
 
 ## Citation
