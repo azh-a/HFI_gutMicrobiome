@@ -3,6 +3,12 @@ This is the official github repository for our paper: (link)
 
 The full pipeline of all microbiome analysis and ML is attached in `zhu_analysis_clean.Rmd`.
 
-Our dataset is attached as a phyloseq object in `zhu_working_ps.rds`.
+## Data
+All data is included in the `data` folder.
+- `zhu_working_ps.rds`: phyloseq object
+- `picrust_pathways_table.tsv`: Picrust2 pathways
+
+## Requirements
+R version 4.5.1.
 
 ## Citation
