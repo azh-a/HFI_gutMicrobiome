@@ -6,8 +6,8 @@ The full pipeline of our microbiome analysis is attached in `zhu_analysis_clean.
 - beta diversity analysis
 - differential abundance analysis
 - linear discriminant analysis
-- food security status prediction with an ML model
 - functional pathway analysis 
+- food security status prediction with an ML model
 
 ## Requirements
 R version 4.5.1.
