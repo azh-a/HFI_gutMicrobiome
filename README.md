@@ -1,5 +1,5 @@
 # Impact of Household Food Insecurity (HFI) on the gut microbiome profile of Ethiopian schoolchildren 
-This is the official github repository for our paper: (link)
+This is the official github repository for our paper: -insert appropriate link-
 
 The full pipeline of all microbiome analysis and ML is attached in `zhu_analysis_clean.Rmd`.
 
@@ -12,3 +12,6 @@ All data is included in the `data` folder.
 - `picrust_pathways_table.tsv`: Picrust2 pathways
 
 ## Citation
+Please cite our work as:
+
+-insert updatated citation-
