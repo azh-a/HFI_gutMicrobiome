@@ -119,43 +119,37 @@ ggsave("q9_alpha.png", plot = a_diversity_q9, width = 6, height = 4, dpi = 500)
 beta_diversity_bray_plot_categorical <- function(ps, variable, title_name=variable, seed = 5) {
   set.seed(seed)
   
-  # Convert sample data to data frame
+  # convert sample data to data frame
   sam_data <- as(sample_data(ps), "data.frame")
   
-  # First remove NAs
+  # remove NAs
   keep_samples <- !is.na(sam_data[[variable]])
   ps_filtered <- prune_samples(keep_samples, ps)
-  
-  # Get updated sample data after NA removal
   sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
   
-  # Count occurrences of each value in the variable
+  # get groups
   value_counts <- table(sam_data_filtered[[variable]])
-  print(value_counts)  # View group sizes
+  #print(value_counts)  
   
-  # Identify values that appear at least 3 times (PCOA plot can't draw ellipse with < 3 points)
+  # only get values that appear at least 3 times (PCOA plot can't draw ellipse with < 3 points)
   valid_values <- names(value_counts)[value_counts >= 3]
   
-  # Filter samples to only include those with valid values
+  # filtering
   final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
   ps_final <- prune_samples(final_keep_samples, ps_filtered)
-  
-  # Get final sample data
   sam_data_final <- as(sample_data(ps_final), "data.frame")
   
-  # Perform PCoA
+  # perform PCoA
   pcoares <- get_pcoa(obj = ps_final, distmethod = "bray", method = "hellinger")
   
-  # Perform PERMANOVA to get p-value
+  # perform PERMANOVA to get p-value
   physeq_dist <- phyloseq::distance(ps_final, method = "bray")
   permanova <- vegan::adonis2(physeq_dist ~ sam_data_final[[variable]])
   p_value <- permanova$`Pr(>F)`[1]
   
-  # Format p-value for display
+  # make plot
   p_text <- ifelse(p_value < 0.001, "p < 0.001", 
                    paste("p =", format(round(p_value, 3), nsmall = 3)))
-  
-  # Create PCoA plot
   pcoaplot <- ggordpoint(obj = pcoares, biplot = FALSE, speciesannot = TRUE,
                          factorNames = c(variable), ellipse = TRUE, linesize = 1.5, 
                          ellipse_linewd = 1, ellipse_lty = 2) +
@@ -165,7 +159,6 @@ beta_diversity_bray_plot_categorical <- function(ps, variable, title_name=variab
     theme( 
           legend.title = element_blank(), 
           legend.text = element_text(size = 20)) +
-    # Add p-value annotation
     annotate("text", x = Inf, y = Inf, 
              label = p_text, 
              hjust = 1.1, vjust = 1.5, 
@@ -273,23 +266,13 @@ ggsave("q9_beta_jaccard.png", plot = b_diversity_jaccard_q9, width = 5.5, height
 
 genus_barplot_categorical <- function(ps, variable, title_name=variable) {
   
-  # Convert sample data to data frame
   sam_data <- as(sample_data(ps), "data.frame")
-  
-  # First remove NAs
   keep_samples <- !is.na(sam_data[[variable]])
   ps_filtered <- prune_samples(keep_samples, ps)
-  
-  # Get updated sample data after NA removal
   sam_data_filtered <- as(sample_data(ps_filtered), "data.frame")
   
-  # Count occurrences of each value in the variable
   value_counts <- table(sam_data_filtered[[variable]])
-  
-  # Identify values that appear at least 5 times
-  valid_values <- names(value_counts)[value_counts >= 2]
-  
-  # Filter samples to only include those with valid values
+  valid_values <- names(value_counts)[value_counts >= 3]
   final_keep_samples <- sam_data_filtered[[variable]] %in% valid_values
   ps_final <- prune_samples(final_keep_samples, ps_filtered)
   
@@ -349,28 +332,28 @@ run_maaslin2_and_plot <- function(
   adjust_vars = c("Age", "sex"),
   remove_unassigned = TRUE
 ) {
-  # Prepare feature table (taxa as rows, samples as columns)
+  # prepare feature table (taxa as rows, samples as columns)
   otumat <- as.data.frame(otu_table(ps_obj))
   if (!taxa_are_rows(ps_obj)) otumat <- t(otumat)
   
-  # Aggregate at desired taxonomic level
+  # aggregate at desired taxonomic level
   taxmat <- as.data.frame(tax_table(ps_obj))
   if (!(taxlevel %in% colnames(taxmat))) stop("taxlevel not in taxonomy table!")
   
-  # Assign "Unassigned" to missing genus
+  # assign "Unassigned" to missing genus
   otumat$Taxon <- taxmat[rownames(otumat), taxlevel]
   otumat$Taxon[is.na(otumat$Taxon) | otumat$Taxon == "" ] <- "Unassigned"
   
-  # Aggregate counts at genus level
+  # aggregate counts at genus level
   feature_table <- otumat %>%
     group_by(Taxon) %>%
     summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
     column_to_rownames("Taxon")
   
-  # Convert to relative abundance (to apply abundance filters)
+  # convert to relative abundance (to apply abundance filters)
   feature_table_rel <- sweep(feature_table, 2, colSums(feature_table), "/")
   
-  # Filtering step: prevalence, mean abundance, and max abundance
+  # filtering
   present_counts <- rowSums(feature_table_rel > 0)
   mean_abund <- rowMeans(feature_table_rel)
   max_abund <- apply(feature_table_rel, 1, max)
@@ -382,20 +365,20 @@ run_maaslin2_and_plot <- function(
   feature_table <- feature_table[keep_taxa, ]
   feature_table_rel <- feature_table_rel[keep_taxa, ]
   
-  # Prepare metadata
+  # prepare metadata
   meta <- as(sample_data(ps_obj), "data.frame")
   meta <- meta[ , , drop = FALSE]
   
-  # Match samples between metadata and feature table
+  # match samples between metadata and feature table
   common_samples <- intersect(colnames(feature_table), rownames(meta))
   feature_table <- feature_table[ , common_samples, drop = FALSE]
   meta <- meta[common_samples, , drop = FALSE]
   
-  # Compose fixed effects
+  # compose fixed effects
   fixed_effects <- unique(c(variable, adjust_vars))
   fixed_effects <- fixed_effects[fixed_effects %in% colnames(meta)]
   
-  # Run MaAsLin2 
+  # run MaAsLin2 
   fit_data <- Maaslin2(
     input_data = as.data.frame(t(feature_table)),
     input_metadata = meta,
@@ -405,19 +388,19 @@ run_maaslin2_and_plot <- function(
     min_prevalence = min_prevalence
   )
   
-  # Results
+  # results
   results <- fit_data$results
   results_var <- results[results$metadata == variable, ]
   results_var <- results_var %>%
     dplyr::mutate(sig = ifelse(qval < qval_sig_max, "Significant", "NS"))
   
-  # Only keep one result per genus
+  # only keep one result per genus
   results_var_unique <- results_var %>%
     group_by(feature) %>%
     slice_min(order_by = qval, n = 1, with_ties = FALSE) %>%
     ungroup()
   
-  # Prevalence and abundance calculation (add to output)
+  # prevalence and abundance calculation (add to output)
   prevalence_df <- data.frame(
     feature = rownames(feature_table_rel),
     prevalence = rowSums(feature_table_rel > 0),
@@ -427,7 +410,7 @@ run_maaslin2_and_plot <- function(
   )
   results_var_unique <- left_join(results_var_unique, prevalence_df, by = "feature")
   
-  # Keep Only Genus Names That are in the Original Genus Column
+  # dealing with unkown genus
   genus_list <- unique(taxmat[[taxlevel]])
   genus_list <- genus_list[!is.na(genus_list) & genus_list != ""]
   if (remove_unassigned) {
@@ -435,7 +418,7 @@ run_maaslin2_and_plot <- function(
   }
   results_var_unique <- results_var_unique %>% filter(feature %in% genus_list)
   
-  # Plot: Label rare significant genera
+  # plotting
   results_var_unique <- results_var_unique %>%
     mutate(
       label_flag = ifelse(
@@ -473,7 +456,7 @@ run_maaslin2_and_plot <- function(
 }
 
 association_boxplot <- function(ps_obj, genus, variable, title_name = genus, variable_name = variable, taxlevel = "Genus") {
-  # Extract relative abundance of the genus across samples
+  
   otumat <- as.data.frame(otu_table(ps_obj))
   if (!taxa_are_rows(ps_obj)) otumat <- t(otumat)
   taxmat <- as.data.frame(tax_table(ps_obj))
@@ -483,12 +466,12 @@ association_boxplot <- function(ps_obj, genus, variable, title_name = genus, var
     summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
     column_to_rownames("Taxon")
   
-  # Use relative abundance
+  # get relative abundance
   feature_table_rel <- sweep(feature_table, 2, colSums(feature_table), "/")
   genus_abund <- as.numeric(feature_table_rel[genus, ])
   sample_names <- colnames(feature_table_rel)
   
-  # Prepare metadata
+  # get metadata
   meta <- as(sample_data(ps_obj), "data.frame")
   meta <- meta[sample_names, , drop = FALSE]
   df <- data.frame(
@@ -497,7 +480,7 @@ association_boxplot <- function(ps_obj, genus, variable, title_name = genus, var
     Group = as.factor(meta[[variable]])
   )
   
-  # Plot
+  # plot
   p <- ggplot(df, aes(x = Group, y = Abundance, fill = Group)) +
     geom_boxplot(outlier.shape = NA) +
     geom_jitter(width = 0.2, alpha = 0.6, color = "black") +
@@ -528,7 +511,7 @@ plot_all_significant_boxplots <- function(
     pull(feature) %>%
     unique()
   
-  # Helper function for a single genus
+  # helper function for a single genus
   plot_single <- function(genus) {
     qval <- maaslin2_table %>%
       filter(feature == genus, metadata == variable) %>%
@@ -569,7 +552,7 @@ plot_all_significant_boxplots <- function(
       theme(legend.position = "none")
   }
   
-  # Loop and collect
+  # loop and collect
   plot_list <- lapply(sig_genera, plot_single)
   names(plot_list) <- sig_genera
   plot_list <- plot_list[!sapply(plot_list, is.null)]  # Remove any nulls
@@ -624,7 +607,7 @@ q7_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q7", "Ever no food to eat (Q7
 q8_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q8", "Slept at night in hunger due to lack of resources (Q8)", qval_sig_max = 0.2)
 q9_maaslin2 <- run_maaslin2_and_plot(ps_gutMicro, "Q9", "Whole day and night without eating (Q9)", qval_sig_max = 0.2)
 
-# To save all plots to files:
+# save all
 # for (genus in names(all_boxplots)) {
 #   ggsave(filename = paste0("boxplot_", genus, ".png"), plot = all_boxplots[[genus]], width = 5, height = 4)
 # }
@@ -653,19 +636,14 @@ ggsave("q9_volc.png", plot = q9_maaslin2$plot, width = 6, height = 4, dpi = 500)
 ## Linear Discriminant analysis w/ Lefse
 ```{r diff Lefse}
 create_lefse_barplot <- function(ps, factor, title_name = factor, lda_cut = 3, wil_cut = 0.01, kw_cut = 0.01) {
-  # Extract sample data
+
   sample_df <- data.frame(sample_data(ps))
-
-  # Get the variable of interest
   var_vector <- sample_df[[factor]]
-
-  # Exclude NAs
   var_vector_no_na <- var_vector[!is.na(var_vector)]
-
   keep_samples <- rownames(sample_df)[!is.na(var_vector)]
   ps_subset <- prune_samples(keep_samples, ps)
   
-  # Run LEfSe
+  # run LEfSe
   mm_lefse <- tryCatch(
     run_lefse(
       ps_subset,
@@ -681,12 +659,12 @@ create_lefse_barplot <- function(ps, factor, title_name = factor, lda_cut = 3, w
     }
   )
 
-  # Remove species-level features (those containing 's__')
+  # remove species-level features
   if (!is.null(mm_lefse)) {
     mm_lefse@marker_table <- mm_lefse@marker_table[!grepl("s__", mm_lefse@marker_table$feature), ]
   }
 
-  # Plot or fallback
+  # plot or fallback
   if (!is.null(mm_lefse) && nrow(mm_lefse@marker_table) > 0) {
     lefse_bar_plot <- tryCatch(
       plot_ef_bar(mm_lefse) +
@@ -741,15 +719,14 @@ cv_predict_food_security_clr_xgb <- function(
   nfolds = 10,
   seed = 100,
   meta_cols = c("Ascaris", "Trichuris", "Hookworm"),
-  n_cores = 4 # number of cores for parallel processing
+  n_cores = 4 
 ) {
   set.seed(seed)
 
-  # Parallel backend
   cl <- makeCluster(n_cores)
   registerDoParallel(cl)
 
-  # Helper: aggregate at desired level and use real taxon names
+  # helper: aggregate at desired level and use real taxon names
   get_tax_matrix <- function(ps, taxlevel, prefix) {
     ps_tax <- tax_glom(ps, taxlevel)
     otumat <- as.data.frame(otu_table(ps_tax))
@@ -764,7 +741,7 @@ cv_predict_food_security_clr_xgb <- function(
     return(otumat)
   }
 
-  # Get Family and Genus matrices
+  # get family and genus matrices
   fam_tab <- get_tax_matrix(ps_obj, "Family", "F__")
   gen_tab <- get_tax_matrix(ps_obj, "Genus", "G__")
   all_feat_tab <- rbind(fam_tab, gen_tab)
@@ -774,7 +751,7 @@ cv_predict_food_security_clr_xgb <- function(
   clr_mat <- compositions::clr(all_feat_tab)
   clr_mat <- t(clr_mat)
 
-  # Prepare response and parasite metadata
+  # Prepare metadata if using
   meta <- as.data.frame(sample_data(ps_obj))
   clr_samples <- rownames(clr_mat)
   meta <- meta[clr_samples, , drop = FALSE]
@@ -791,14 +768,14 @@ cv_predict_food_security_clr_xgb <- function(
   meta_features[] <- lapply(meta_features, function(x) as.numeric(as.character(x)))
   meta_features <- meta_features[, sapply(meta_features, function(x) all(x %in% c(0, 1, NA))), drop = FALSE]
 
-  # Combine CLR features and parasite metadata
+  # combine CLR features and parasite metadata
   X_full <- cbind(clr_mat, meta_features)
 
-  # Remove near-zero variance features
+  # remove near-zero variance features
   nzv <- caret::nearZeroVar(X_full)
   if (length(nzv) > 0) X_full <- X_full[, -nzv, drop=FALSE]
 
-  # Hyperparameter grid for XGBoost
+  # hyperparameter grid for XGBoost
   xgb_grid <- expand.grid(
     nrounds = c(50, 100, 200, 400, 800),
     max_depth = c(2, 3, 4, 5, 6, 8, 10),
@@ -814,7 +791,7 @@ cv_predict_food_security_clr_xgb <- function(
     number = nfolds,
     classProbs = TRUE,
     savePredictions = "final",
-    allowParallel = TRUE  # <--- key argument for parallel
+    allowParallel = TRUE  
   )
 
   xgb_fit <- caret::train(
@@ -826,11 +803,11 @@ cv_predict_food_security_clr_xgb <- function(
     verbose = FALSE
   )
 
-  # Results
+  # results
   overall_acc <- max(xgb_fit$results$Accuracy)
   best_params <- xgb_fit$bestTune
 
-  # Variable importance
+  # variable importance
   varimp <- caret::varImp(xgb_fit, scale = FALSE)$importance
   varimp_df <- tibble(Feature = rownames(varimp), Importance = varimp[,1]) %>%
     arrange(desc(Importance)) %>%
@@ -845,9 +822,8 @@ cv_predict_food_security_clr_xgb <- function(
   y_true <- xgb_fit$pred$obs[order(xgb_fit$pred$rowIndex)]
   overall_cm <- caret::confusionMatrix(preds, y_true)
 
-  # STOP cluster after training!
   stopCluster(cl)
-  registerDoSEQ() # revert to sequential
+  registerDoSEQ() 
 
   return(list(
     overall_accuracy = overall_acc,
@@ -924,10 +900,9 @@ plot_top_feature_heatmap_clr <- function(
   min_prevalence = 0.05
 ) {
   
-  # 1. Top N features
   top_features <- head(model_results$feature_importance$Feature, n_top)
   
-  # 2. Get genus & family tables
+  # get genus & family tables
   get_tax_matrix <- function(ps, taxlevel, prefix) {
     ps_tax <- tax_glom(ps, taxlevel)
     otumat <- as.data.frame(otu_table(ps_tax))
@@ -946,12 +921,12 @@ plot_top_feature_heatmap_clr <- function(
   gen_tab <- get_tax_matrix(ps_obj, "Genus", "G__")
   all_feat_tab <- rbind(fam_tab, gen_tab)
   
-  # 3. CLR transformation
+  # CLR transformation
   all_feat_tab[all_feat_tab == 0] <- 1e-6
   clr_mat <- compositions::clr(all_feat_tab)
   clr_mat <- t(clr_mat)  # samples as rows, features as columns
   
-  # 4. Get metadata (as numeric)
+  # get metadata
   meta <- as.data.frame(sample_data(ps_obj))
   clr_samples <- rownames(clr_mat)
   meta <- meta[clr_samples, , drop = FALSE]
@@ -959,7 +934,7 @@ plot_top_feature_heatmap_clr <- function(
   metadata_features <- meta[, metadata_vars, drop = FALSE]
   metadata_features[] <- lapply(metadata_features, function(x) as.numeric(as.character(x)))
   
-  # 5. Combine CLR and metadata
+  # combine CLR and metadata
   X_full <- cbind(clr_mat, metadata_features)
   # Ensure all columns are numeric
   for (i in seq_len(ncol(X_full))) {
@@ -968,32 +943,32 @@ plot_top_feature_heatmap_clr <- function(
     }
   }
   
-  # 6. Subset to top features, as rows (order preserved)
+  # subset to top features, as rows (order preserved)
   top_feats_present <- top_features[top_features %in% colnames(X_full)]
   if (length(top_feats_present) == 0) stop("No top features found in input matrix.")
   heatmap_mat <- t(X_full[, top_feats_present, drop = FALSE])
   
-  # Remove rows (features) that are all NA or all zero
+  # filtering, just in case
   keep_rows <- apply(heatmap_mat, 1, function(x) any(!is.na(x)) && any(x != 0))
   heatmap_mat <- heatmap_mat[keep_rows, , drop = FALSE]
   if (nrow(heatmap_mat) == 0) stop("No valid features to plot after removing all-NA/zero rows.")
   
-  # 7. Get annotation for sample outcome
+  # get annotation
   sample_anno <- as(sample_data(ps_obj), "data.frame")[, outcome_var, drop = FALSE]
   sample_anno <- sample_anno[colnames(heatmap_mat), , drop = FALSE]
   sample_anno[[outcome_var]] <- as.factor(as.character(sample_anno[[outcome_var]]))
   rownames(sample_anno) <- colnames(heatmap_mat)
   
-  # 8. Order columns by group
+  # order columns by group
   group_order <- order(sample_anno[[outcome_var]])
   heatmap_mat <- heatmap_mat[, group_order, drop = FALSE]
   sample_anno <- sample_anno[group_order, , drop = FALSE]
   
-  # 9. Z-score (standardize) each feature (row)
+  # Z-score (standardize) each feature (row)
   heatmap_mat_scaled <- t(scale(t(heatmap_mat)))
   heatmap_mat_scaled[is.na(heatmap_mat_scaled)] <- 0
   
-  # 10. Plot heatmap (no clustering of samples)
+  # plot heatmap (no clustering of samples)
   png("top_features_heatmap.png", width = 5000, height = 1800, res = 500)
   pheatmap::pheatmap(
     mat = heatmap_mat_scaled,
@@ -1054,7 +1029,7 @@ run_picrust_daa_metacyc <- function(
   top_n        = 20,
   min_nonzero  = 3
 ){
-  # Load & tidy abundance 
+
   raw <- readr::read_tsv(file_name, show_col_types = FALSE)
   if (!"pathway" %in% names(raw))
     stop("The input table must contain a 'pathway' column (MetaCyc IDs).")
@@ -1064,13 +1039,13 @@ run_picrust_daa_metacyc <- function(
     column_to_rownames("pathway") |>
     as.data.frame()
 
-  # Clean sample IDs
+  # clean sample IDs
   colnames(abundance) <- .clean_ids(colnames(abundance))
 
-  # Ensure numeric
+  # ensure numeric
   suppressWarnings(abundance[] <- lapply(abundance, as.numeric))
 
-  # Collapse duplicate sample IDs if any
+  # collapse duplicate sample IDs if any
   if (any(duplicated(colnames(abundance)))) {
     warning("Duplicated sample IDs after cleaning; collapsing by mean.")
     abund_t <- t(abundance)
@@ -1079,7 +1054,7 @@ run_picrust_daa_metacyc <- function(
     abundance <- t(abund_sum / as.vector(table(grp)))
   }
 
-  # Metadata
+  # metadata
   meta <- as(sample_data(ps_obj), "data.frame") |>
     rownames_to_column("sample_name")
 
@@ -1092,7 +1067,7 @@ run_picrust_daa_metacyc <- function(
   }
   meta[[group_col]] <- as.factor(meta[[group_col]])
 
-  # Align samples
+  # align samples
   common <- intersect(colnames(abundance), meta$sample_name)
   message(sprintf("PICRUSt2 samples: %d | phyloseq samples: %d | overlap: %d",
                   ncol(abundance), nrow(meta), length(common)))
@@ -1104,7 +1079,7 @@ run_picrust_daa_metacyc <- function(
   meta      <- meta |> filter(sample_name %in% common)
   abundance <- abundance[, meta$sample_name, drop = FALSE]
 
-  # Optional: prefilter sparse features
+  # prefilter sparse features
   if (min_nonzero > 1L) {
     keep <- rowSums(abundance > 0, na.rm = TRUE) >= min_nonzero
     abundance <- abundance[keep, , drop = FALSE]
@@ -1124,13 +1099,13 @@ run_picrust_daa_metacyc <- function(
     ko_to_kegg     = FALSE
   )
 
-  # Detect p-value columns
+  # detect p-value columns
   p_adj_col <- intersect(c("p_adjust","p.adjust","padj","q_value","qvalue"), names(annot))[1]
   p_col     <- intersect(c("p_values","p.value","pvalue","p"), names(annot))[1]
   if (is.na(p_adj_col)) stop("Adjusted p-value column not found in DAA results.")
   if (is.na(p_col))     p_col <- p_adj_col
 
-  # Clean p-value table
+  # clean p-value table
   pval_table <- annot |>
     dplyr::transmute(
       feature,
@@ -1140,7 +1115,7 @@ run_picrust_daa_metacyc <- function(
     )
 
   # Check if adjusted p's are significant
-  # --- choose which p-values to drive the plot threshold (fallback if none sig)
+  # (choose which p-values to drive the plot threshold (fallback if none sig) )
   n_sig_adj <- sum(annot[[p_adj_col]] <= p_adj_cutoff, na.rm = TRUE)
   use_raw_p_for_plot <- (is.na(n_sig_adj) || n_sig_adj == 0)
 
@@ -1149,20 +1124,17 @@ run_picrust_daa_metacyc <- function(
       "No pathways significant at adjusted p ≤ %.3f; using raw p-values for plotting.",
       p_adj_cutoff
     ))
-    # Keep all columns, but for plotting, treat raw p as the adjusted p
     daa_for_plot <- annot
-    daa_for_plot[[p_adj_col]] <- annot[[p_col]]   # <- key line
+    daa_for_plot[[p_adj_col]] <- annot[[p_col]]   
 
-    # Rank/top-N by raw p-values
     top_feats <- annot |>
       dplyr::arrange(.data[[p_col]]) |>
       dplyr::slice_head(n = top_n) |>
       dplyr::pull(feature)
 
-    plot_threshold <- p_raw_cutoff  # use your raw-p cutoff here
+    plot_threshold <- p_raw_cutoff  
   } else {
     daa_for_plot <- annot
-    # Rank/top-N by adjusted p (tie-break by raw p)
     top_feats <- annot |>
       dplyr::arrange(.data[[p_adj_col]], .data[[p_col]]) |>
       dplyr::slice_head(n = top_n) |>
@@ -1185,7 +1157,6 @@ run_picrust_daa_metacyc <- function(
     x_lab              = "description"
   ) + ggprism::theme_prism() + theme(legend.position = "right")
 
-  # Return objects only
   invisible(list(
     abundance          = abundance,
     metadata           = meta,
@@ -1220,3 +1191,4 @@ print(pval_sorted, n = Inf)
 
 
 ```
+
