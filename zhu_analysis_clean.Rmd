@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Libraries
 ```{r libraries}
+# be careful in regards to package functions overlapping
 library(phyloseq)
 library(vegan)
 library(rstatix)
@@ -997,11 +998,8 @@ plot_roc_curve_gg(results_xgb_parallel)
 plot_top_importance(results_xgb_parallel, n_top = 10) 
 ```
 
-```{r post-hoc}
-
-```
-
 ```{r picrust}
+# NOT included within paper
 suppressPackageStartupMessages({
   library(readr); library(dplyr); library(tibble); library(stringr)
   library(phyloseq)
@@ -1191,4 +1189,5 @@ print(pval_sorted, n = Inf)
 
 
 ```
+
 
