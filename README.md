@@ -1,4 +1,4 @@
-# Impact of Household Food Insecurity (HFI) on the gut microbiome profile of Ethiopian schoolchildren 
+# Household Food Insecurity Alters Gut Microbiome Composition and Enriches Sutterella in Ethiopian Schoolchildren 
 This is the official github repository for our paper: -insert appropriate link-
 
 The full pipeline of our microbiome analysis is attached in `zhu_analysis_clean.Rmd` and includes:
