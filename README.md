@@ -1,5 +1,5 @@
 # Household Food Insecurity Alters Gut Microbiome Composition and Enriches Sutterella in Ethiopian Schoolchildren 
-This is the official github repository for our paper: -insert appropriate link-
+This is the official github repository for our paper: https://doi.org/10.3390/nu18040680
 
 The full pipeline of our microbiome analysis is attached in `zhu_analysis_clean.Rmd` and includes:
 - alpha diversity analysis
