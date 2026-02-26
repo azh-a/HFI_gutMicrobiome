@@ -20,4 +20,4 @@ All data is included in the `data` folder.
 ## Citation
 Please cite our work as:
 
--insert updatated citation-
+Zhu, A., Bonja Geleto, F., Mohammed Ali, M., Ashenafi, H., Erko, B., & Taye, B. (2026). Household Food Insecurity Alters Gut Microbiome Composition and Enriches Sutterella in Ethiopian Schoolchildren. Nutrients, 18(4), 680. https://doi.org/10.3390/nu18040680
